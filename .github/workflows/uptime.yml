@@ -1,0 +1,105 @@
+name: ROAR uptime
+# Checks roarcircle.org from OUTSIDE the server and keeps a status page that does not live on the server (TRUST-IMPORT, Marshall
+# approved Nov 12 2026). The server's own watchdog (deploy/watchdog.sh) and its status page (roarcircle.org/status) stop when the
+# whole server stops; this does not.
+#
+# Each run: one curl to /api/v1/health/ready (the API and its database, audit H58); the result added to history.json on the
+# gh-pages branch (the last 7 days of checks, 90 days of daily counts); status/index.html published next to it (GitHub Pages,
+# status.roarcircle.org). On the second failed check in a row, a GitHub issue labelled "uptime" is opened (GitHub emails the
+# repository's watchers) and, if the secret UPTIME_WEBHOOK is set, a message is posted to it (Slack, Discord, ntfy or any address
+# that takes a POST). When the site answers again the issue gets a note and is closed, and the webhook hears it too.
+#
+# WHERE IT RUNS EVERY 5 MINUTES: not here. This repository is private, where every 5 minutes would be about 8,640 runs a month,
+# each billed as at least a minute (about 8,640 minutes, over the free 2,000 to 3,000, roughly $55 to $70 a month), plus Pages,
+# which needs a paid plan for a private repository. scripts/status-repo.sh copies this file and status/index.html into a small
+# PUBLIC repository (ApostleML/roar-status) and switches the schedule line below on there: public repositories get Actions minutes
+# and GitHub Pages free. Nothing from this repository's code goes there. docs/launch/ops-setup-for-marshall.md (part 4) has Marshall's steps.
+# Here it runs only by hand (Actions, ROAR uptime, Run workflow): about 1 minute each time.
+# The schedule also needs the repository variable UPTIME_CHECKS set to "on" (switch it off to pause the checks without editing).
+# GitHub can start a scheduled run a few minutes late when it is busy; the page shows when the last check was.
+on:
+  workflow_dispatch:
+  schedule: [{ cron: '*/5 * * * *' }]   # STATUS-REPO: switched on by scripts/status-repo.sh in the public status repository only
+permissions:
+  contents: write   # history.json and the page, on the gh-pages branch
+  issues: write     # the "roarcircle.org is not answering" issue
+concurrency:
+  group: roar-uptime
+  cancel-in-progress: false
+jobs:
+  health:
+    if: github.event_name == 'workflow_dispatch' || vars.UPTIME_CHECKS == 'on'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 3
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPO: ${{ github.repository }}
+      CHECK_URL: https://roarcircle.org/api/v1/health/ready
+      WEBHOOK: ${{ secrets.UPTIME_WEBHOOK }}
+      STATUS_DOMAIN: ${{ vars.STATUS_DOMAIN }}
+    steps:
+      - name: Check roarcircle.org, record the result, publish the status page
+        run: |
+          set -u
+          start=$(date +%s%3N)
+          if curl -fsS -o /dev/null --max-time 20 "$CHECK_URL"; then ok=1; else ok=0; fi
+          ms=$(( $(date +%s%3N) - start ))
+          echo "roarcircle.org answered: $ok ($ms ms)"
+
+          # the history so far (none on the very first run)
+          git clone -q --depth 1 --branch gh-pages "https://x-access-token:${GH_TOKEN}@github.com/${REPO}.git" site 2>/dev/null || mkdir -p site
+          node - "$ok" "$ms" > state.txt <<'JS'
+          const fs = require('fs');
+          const [ok, ms] = process.argv.slice(2).map(Number);
+          const file = 'site/history.json';
+          let h = { v: 1, checks: [], days: {}, fails: 0, downSince: null };
+          try { h = { ...h, ...JSON.parse(fs.readFileSync(file, 'utf8')) }; } catch {}
+          const now = Math.floor(Date.now() / 1000);
+          const before = h.fails;
+          h.checks.push([now, ok, ok ? ms : 0]);
+          h.checks = h.checks.filter(c => c[0] > now - 7 * 86400);
+          const day = new Date().toISOString().slice(0, 10);
+          const d = h.days[day] || [0, 0]; h.days[day] = [d[0] + ok, d[1] + 1];
+          const keep = new Date(Date.now() - 90 * 86400000).toISOString().slice(0, 10);
+          for (const k of Object.keys(h.days)) if (k < keep) delete h.days[k];
+          h.fails = ok ? 0 : before + 1;
+          if (!ok && !h.downSince) h.downSince = now;
+          const downFor = h.downSince ? Math.round((now - h.downSince) / 60) : 0;
+          if (ok) h.downSince = null;
+          h.updated = now;
+          fs.writeFileSync(file, JSON.stringify(h));
+          // what happened: "down" on the second failure in a row, "back" on the first answer after that
+          console.log(!ok && h.fails === 2 ? 'down' : ok && before >= 2 ? `back ${downFor}` : 'same');
+          JS
+          read -r event minutes < state.txt || true
+          echo "event: $event"
+
+          tell() {   # the webhook, when one is set: plain text for ntfy, JSON (Slack "text", Discord "content") for the rest
+            [ -n "$WEBHOOK" ] || return 0
+            case "$WEBHOOK" in
+              *ntfy*) curl -fsS -m 10 -d "$1" "$WEBHOOK" >/dev/null || echo "webhook failed" ;;
+              *) curl -fsS -m 10 -H 'Content-Type: application/json' -d "$(node -e 'const t=process.argv[1];console.log(JSON.stringify({text:t,content:t}))' "$1")" "$WEBHOOK" >/dev/null || echo "webhook failed" ;;
+            esac
+          }
+          open_issue=$(gh issue list -R "$REPO" --label uptime --state open --json number --jq '.[0].number' 2>/dev/null || true)
+          if [ "$event" = "down" ]; then
+            msg="roarcircle.org is not answering: two checks in a row failed ($(date -u '+%Y-%m-%d %H:%M UTC')). Check the server (docs/INCIDENT.md in the ROAR repository)."
+            if [ -n "$open_issue" ]; then gh issue comment "$open_issue" -R "$REPO" --body "$msg"
+            else
+              gh label create uptime -R "$REPO" --color B3261E --description "roarcircle.org did not answer" 2>/dev/null || true
+              gh issue create -R "$REPO" --label uptime --title "roarcircle.org is not answering" --body "$msg"
+            fi
+            tell "$msg"
+          elif [ "$event" = "back" ]; then
+            msg="roarcircle.org is answering again ($(date -u '+%Y-%m-%d %H:%M UTC')), after about ${minutes:-?} minutes."
+            if [ -n "$open_issue" ]; then gh issue close "$open_issue" -R "$REPO" --comment "$msg"; fi
+            tell "$msg"
+          fi
+
+          # publish: the page from the default branch, the history and the custom address, as one commit replaced each time
+          gh api "repos/${REPO}/contents/status/index.html" -H "Accept: application/vnd.github.raw" > site/index.html.new 2>/dev/null && mv site/index.html.new site/index.html || rm -f site/index.html.new
+          if [ -n "$STATUS_DOMAIN" ]; then echo "$STATUS_DOMAIN" > site/CNAME; fi
+          touch site/.nojekyll
+          cd site && rm -rf .git && git init -q -b gh-pages && git add -A \
+            && git -c user.name='ROAR uptime' -c user.email='uptime@users.noreply.github.com' commit -q -m "Status check $(date -u '+%Y-%m-%d %H:%M UTC'): $([ "$ok" = 1 ] && echo up || echo down)" \
+            && git push -q -f "https://x-access-token:${GH_TOKEN}@github.com/${REPO}.git" gh-pages
