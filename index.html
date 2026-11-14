@@ -1,0 +1,102 @@
+<!doctype html>
+<!--
+  TRUST-IMPORT (Marshall, Nov 12 2026): ROAR Circle's status page that does NOT live on ROAR's own server. GitHub Pages serves it
+  (status.roarcircle.org); .github/workflows/uptime.yml checks roarcircle.org every 5 minutes, writes history.json next to this
+  file and publishes both. No church's or person's data is here: only whether the site answered, and how fast. docs/launch/ops-setup-for-marshall.md (part 4)
+  says how it is switched on. The page reads history.json; with no script it still says where to look.
+-->
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>ROAR Circle status</title>
+  <meta name="description" content="Is ROAR Circle working? Checked from outside every 5 minutes, kept away from ROAR's own server." />
+  <meta name="theme-color" content="#0c4643" />
+  <style>
+    :root { --bg: #f3f1e9; --card: #fefdf9; --line: #e2ddd0; --ink: #1d2a28; --muted: #4a5a57; --up: #1f7a4d; --down: #b3261e; --none: #cfc9ba; color-scheme: light; }
+    @media (prefers-color-scheme: dark) { :root { --bg: #041f1d; --card: #0a2f2c; --line: #1c4a45; --ink: #f6f1e7; --muted: #b9cfc9; --up: #4fc3a8; --down: #ff8a80; --none: #2a5650; color-scheme: dark; } }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--bg); color: var(--ink); font: 1rem/1.6 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+    main { max-width: 760px; margin: 0 auto; padding: 24px 16px 48px; }
+    h1 { font-size: 1.6rem; margin: 0 0 .25rem; letter-spacing: -.01em; }
+    h2 { font-size: 1.1rem; margin: 2rem 0 .5rem; }
+    .card { background: var(--card); border: 1px solid var(--line); border-radius: 16px; padding: 1rem 1.25rem; }
+    .now { display: flex; align-items: center; gap: .75rem; font-size: 1.25rem; font-weight: 650; }
+    .dot { width: 14px; height: 14px; border-radius: 50%; background: var(--none); flex: none; }
+    .up .dot { background: var(--up); } .down .dot { background: var(--down); }
+    .muted { color: var(--muted); }
+    .bars { display: flex; gap: 1px; align-items: stretch; height: 34px; margin: .5rem 0 .25rem; }
+    .bars span { flex: 1; border-radius: 2px; background: var(--none); min-width: 1px; }
+    .bars .u { background: var(--up); } .bars .d { background: var(--down); } .bars .p { background: linear-gradient(var(--down) 50%, var(--up) 50%); }
+    .scale { display: flex; justify-content: space-between; font-size: .85rem; color: var(--muted); }
+    a { color: inherit; text-underline-offset: .15em; }
+    footer { margin-top: 2rem; font-size: .9rem; color: var(--muted); }
+  </style>
+</head>
+<body>
+<main>
+  <h1>ROAR Circle status</h1>
+  <p class="muted">Checked from outside every 5 minutes. This page is kept by GitHub, away from ROAR's own server, so it still answers when ROAR does not.</p>
+
+  <div class="card" id="now-card">
+    <div class="now" id="now"><span class="dot"></span><span>Loading the latest check…</span></div>
+    <div class="muted" id="when"></div>
+    <noscript><p>This page needs JavaScript to show the checks. You can also open <a href="https://roarcircle.org/status">roarcircle.org/status</a>.</p></noscript>
+  </div>
+
+  <h2>The last 24 hours</h2>
+  <div class="card">
+    <div class="bars" id="day" aria-label="Checks in the last 24 hours, one bar per hour"></div>
+    <div class="scale"><span>24 hours ago</span><span>now</span></div>
+  </div>
+
+  <h2>The last 90 days</h2>
+  <div class="card">
+    <div class="bars" id="days" aria-label="Each day of the last 90 days"></div>
+    <div class="scale"><span>90 days ago</span><span id="uptime"></span><span>today</span></div>
+  </div>
+
+  <footer>
+    <p>Green: every check that hour or day answered. Red: none did. Half and half: some did not. Grey: no check yet.</p>
+    <p>ROAR's own status page, with a note from ROAR Circle when something is being fixed: <a href="https://roarcircle.org/status">roarcircle.org/status</a>.
+      Questions: <a href="mailto:support@roarcircle.org">support@roarcircle.org</a>.</p>
+  </footer>
+</main>
+<script>
+(function () {
+  var $ = function (id) { return document.getElementById(id); };
+  var ago = function (s) { var m = Math.round((Date.now() / 1000 - s) / 60); return m < 1 ? 'just now' : m < 60 ? m + ' minutes ago' : Math.round(m / 60) + ' hours ago'; };
+  var bar = function (up, total, label) {
+    var b = document.createElement('span');
+    b.className = !total ? '' : up === total ? 'u' : up === 0 ? 'd' : 'p';
+    b.title = label + (total ? ': ' + up + ' of ' + total + ' checks answered' : ': no checks');
+    return b;
+  };
+  fetch('history.json', { cache: 'no-store' }).then(function (r) { return r.json(); }).then(function (h) {
+    var checks = h.checks || [];
+    var last = checks[checks.length - 1];
+    var card = $('now-card');
+    if (!last) { $('now').lastChild.textContent = 'No checks yet.'; return; }
+    var stale = Date.now() / 1000 - last[0] > 30 * 60;
+    card.className = 'card ' + (stale ? '' : last[1] ? 'up' : 'down');
+    $('now').lastChild.textContent = stale ? 'No recent check (the checker may be paused)' : last[1] ? 'ROAR Circle is working' : 'ROAR Circle is not answering';
+    $('when').textContent = 'Last checked ' + ago(last[0]) + (last[1] && last[2] ? ', answered in ' + (last[2] / 1000).toFixed(1) + ' seconds' : '') +
+      (h.downSince && !last[1] ? '. Not answering since ' + new Date(h.downSince * 1000).toLocaleString() : '') + '.';
+    var now = Date.now() / 1000, day = $('day');
+    for (var i = 23; i >= 0; i--) {
+      var from = now - (i + 1) * 3600, to = now - i * 3600, up = 0, n = 0;
+      checks.forEach(function (c) { if (c[0] > from && c[0] <= to) { n++; up += c[1]; } });
+      day.appendChild(bar(up, n, new Date(to * 1000).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })));
+    }
+    var days = h.days || {}, list = $('days'), su = 0, sn = 0;
+    for (var d = 89; d >= 0; d--) {
+      var key = new Date(Date.now() - d * 86400000).toISOString().slice(0, 10), v = days[key] || [0, 0];
+      su += v[0]; sn += v[1];
+      list.appendChild(bar(v[0], v[1], key));
+    }
+    if (sn) $('uptime').textContent = (100 * su / sn).toFixed(2) + '% of checks answered';
+  }).catch(function () { $('now').lastChild.textContent = 'The check history could not be loaded. Try again in a minute.'; });
+})();
+</script>
+</body>
+</html>
